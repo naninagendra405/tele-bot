@@ -814,5 +814,7 @@ async def main():
         print(f"Error in bot initialization: {e}")
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(main())
+    try:
+        asyncio.run(main())  # Use asyncio.run() to manage the loop
+    except Exception as e:
+        print(f"Error in bot initialization: {e}")
