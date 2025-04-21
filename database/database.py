@@ -2,9 +2,8 @@ import asyncpg
 import os
 import datetime
 from typing import Optional, List, Dict
-from dotenv import load_dotenv
 
-load_dotenv()
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 async def get_db_connection():
