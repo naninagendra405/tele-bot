@@ -15,12 +15,17 @@ class Database:
         self.pool: Optional[asyncpg.pool.Pool] = None
 
     async def connect(self):
-        if self.pool is None:
-            try:
-                self.pool = await asyncpg.create_pool(DATABASE_URL)
-                print("[DB] Connected successfully!")
-            except Exception as e:
-                print(f"[DB ERROR] Failed to connect: {e}")
+        try:
+            if not self.pool:
+                self.pool = await asyncpg.create_pool(
+                    DATABASE_URL,
+                    min_size=1,
+                    max_size=10,
+                    command_timeout=60
+                )
+                print("✅ Connected to database successfully!")
+        except Exception as e:
+            print(f"❌ Database connection error: {e}")
 
     async def create_tables(self):
         async with self.pool.acquire() as conn:
