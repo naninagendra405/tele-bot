@@ -32,10 +32,9 @@ class Database:
                 );
             ''')
 
-    async def add_user(self, user_id, full_name):
+    async def add_user(self, user_id: int, full_name: str, referrer_id: Optional[int] = None):
         try:
-            # Debugging output
-            print(f"Attempting to add user: {user_id}, {full_name}")
+            print(f"Attempting to add user: {user_id}, {full_name}, referred by: {referrer_id}")
 
             existing = await self.pool.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
             if existing:
@@ -44,8 +43,8 @@ class Database:
 
             # Set initial balance to 30 for new users
             await self.pool.execute(
-                "INSERT INTO users (user_id, full_name, balance) VALUES ($1, $2, 30)",
-                user_id, full_name
+                "INSERT INTO users (user_id, full_name, balance, referrer_id) VALUES ($1, $2, 30, $3)",
+                user_id, full_name, referrer_id
             )
             print(f"User {user_id} added successfully with a ₹30 joining bonus.")
             return True
@@ -53,11 +52,14 @@ class Database:
             print(f"Error adding user {user_id}: {e}")
             return False
 
-    async def get_balance(self, user_id):
-        async with self.pool.acquire() as conn:
-            balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", user_id)
-            return balance or 0
-
+    async def get_user_full_name(self, user_id: int) -> Optional[str]:
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT full_name FROM users WHERE user_id = $1", user_id)
+                return row["full_name"] if row else None
+        except Exception as e:
+            print(f"Error fetching full name for user {user_id}: {e}")
+            return None
     # ───── USER MANAGEMENT ─────
 
     async def add_user_if_not_exists(self, user_id: int, username: Optional[str] = None):
@@ -73,8 +75,35 @@ class Database:
         query = "SELECT user_id, amount, choice FROM bets"
         return await self.pool.fetch(query)
 
-    async def clear_all_bets(self):
-        await self.pool.execute("DELETE FROM bets")
+    async def get_main_balance(self, user_id: int) -> float:
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT balance FROM users WHERE user_id = $1",
+                    user_id
+                )
+                return float(row['balance']) if row else 0.0
+        except Exception as e:
+            print(f"Error getting main balance for user {user_id}: {e}")
+            return 0.0
+        
+    async def get_total_wagered(self, user_id: int) -> float:
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT COALESCE(SUM(amount), 0) as total_wagered 
+                    FROM bets 
+                    WHERE user_id = $1
+                """, user_id)
+                return float(row['total_wagered'])
+        except Exception as e:
+            print(f"Error getting total wagered amount for user {user_id}: {e}")
+            return 0.0
+    async def get_all_user_ids(self) -> List[int]:
+        await self.connect()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT user_id FROM users")
+            return [row['user_id'] for row in rows]
 
     async def clear_current_bets(self):
         query = "DELETE FROM bets"
@@ -193,21 +222,164 @@ class Database:
         async with self.pool.acquire() as conn:
             await conn.execute("DELETE FROM bets")
 
-    # ───── DEPOSITS & WITHDRAWALS ─────
-    async def record_deposit(self, user_id: int, txn_id: str, amount: float):
-        await self.connect()
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO deposits (user_id, transaction_id, amount, timestamp, approved)
-                VALUES ($1, $2, $3, NOW(), FALSE)
-            """, user_id, txn_id, amount)
+    async def award_referral_bonus(self, referrer_id: int):
+        try:
+            bonus = 10  # Fixed bonus of ₹10
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1, referral_bonus = referral_bonus + $1, referral_count = referral_count + 1 WHERE user_id = $2", 
+                    bonus, referrer_id
+                )
+                print(f"Referral bonus of ₹{bonus} awarded to user {referrer_id}")
+        except Exception as e:
+            print(f"Error awarding referral bonus to user {referrer_id}: {e}")
 
-    async def approve_deposit(self, deposit_id: int):
-        await self.connect()
-        async with self.pool.acquire() as conn:
-            await conn.execute("UPDATE deposits SET approved = TRUE WHERE id = $1", deposit_id)
-            deposit = await conn.fetchrow("SELECT user_id, amount FROM deposits WHERE id = $1", deposit_id)
-            await self.update_balance(deposit["user_id"], deposit["amount"])
+    # ───── DEPOSITS & WITHDRAWALS ─────
+    async def record_deposit(self, user_id: int, txn_id: str, amount: float) -> bool:
+        try:
+            async with self.pool.acquire() as conn:
+                # Extensive validation
+                if not user_id or not txn_id:
+                    print("❌ Invalid user ID or transaction ID")
+                    return False
+
+                # Validate amount
+                if amount <= 0:
+                    print(f"❌ Invalid deposit amount: {amount}")
+                    return False
+
+                # Check for duplicate transaction
+                existing = await conn.fetchrow(
+                    "SELECT * FROM deposits WHERE transaction_id = $1", 
+                    txn_id
+                )
+                if existing:
+                    print(f"❌ Deposit with transaction ID {txn_id} already exists")
+                    return False
+
+                # Record deposit
+                await conn.execute("""
+                    INSERT INTO deposits (
+                        user_id, 
+                        transaction_id, 
+                        amount, 
+                        timestamp, 
+                        approved,
+                        applied
+                    ) VALUES ($1, $2, $3, NOW(), FALSE, FALSE)
+                """, user_id, txn_id, amount)
+                
+                print(f"✅ Deposit recorded for user {user_id}: ₹{amount}")
+
+                # Check if this is the first approved deposit
+                first_deposit = await conn.fetchval(
+                    "SELECT COUNT(*) = 0 FROM deposits WHERE user_id = $1 AND approved = TRUE", 
+                    user_id
+                )
+
+                # Handle referral bonus
+                if first_deposit and amount >= 100:
+                    referrer_id = await conn.fetchval(
+                        "SELECT referrer_id FROM users WHERE user_id = $1", 
+                        user_id
+                    )
+                    if referrer_id:
+                        bonus = 10  # Fixed bonus of ₹10
+                        await conn.execute(
+                            "UPDATE users SET balance = balance + $1 WHERE user_id = $2", 
+                            bonus, referrer_id
+                        )
+                        print(f"Referral bonus of ₹{bonus} awarded to user {referrer_id}")
+
+                return True
+        except Exception as e:
+            print(f"❌ Error recording deposit: {e}")
+            return False
+    async def mark_welcome_as_shown(self, user_id: int):
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("UPDATE users SET welcome_shown = TRUE WHERE user_id = $1", user_id)
+                print(f"Welcome message marked as shown for user {user_id}.")
+        except Exception as e:
+            print(f"Error marking welcome as shown for user {user_id}: {e}")
+
+    async def get_pending_deposits(self) -> List[Dict]:
+        try:
+            await self.connect()
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT 
+                        id, 
+                        user_id, 
+                        amount, 
+                        transaction_id,
+                        timestamp
+                    FROM deposits
+                    WHERE approved = FALSE
+                    ORDER BY timestamp DESC
+                    """
+                )
+                return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"❌ Error fetching pending deposits: {e}")
+            return []
+
+    async def has_welcome_been_shown(self, user_id: int) -> bool:
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT welcome_shown FROM users WHERE user_id = $1", user_id)
+                return row["welcome_shown"] if row else False
+        except Exception as e:
+            print(f"Error checking welcome status for user {user_id}: {e}")
+            return False
+
+    async def approve_deposit(self, deposit_id: int) -> bool:
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    deposit = await conn.fetchrow(
+                        "SELECT * FROM deposits WHERE id = $1 AND approved = FALSE FOR UPDATE", 
+                        deposit_id
+                    )
+                    if not deposit:
+                        print(f"Deposit {deposit_id} not found or already approved")
+                        return False
+
+                    await conn.execute(
+                        "UPDATE deposits SET approved = TRUE WHERE id = $1", 
+                        deposit_id
+                    )
+                    await conn.execute(
+                        "UPDATE users SET balance = balance + $1 WHERE user_id = $2", 
+                        deposit["amount"], 
+                        deposit["user_id"]
+                    )
+                    print(f"Deposit {deposit_id} approved successfully")
+                    return True
+        except Exception as e:
+            print(f"Detailed error approving deposit {deposit_id}: {e}")
+            return False
+    async def approve_withdrawal(self, withdrawal_id: int) -> (bool, Optional[dict]):
+        try:
+            await self.connect()
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    withdrawal = await conn.fetchrow(
+                        "SELECT * FROM withdrawals WHERE id = $1 AND status = 'pending' FOR UPDATE", 
+                        withdrawal_id
+                    )
+                    if not withdrawal:
+                        return False, None
+
+                    await conn.execute(
+                        "UPDATE withdrawals SET status = 'approved' WHERE id = $1", 
+                        withdrawal_id
+                    )
+                    return True, withdrawal
+        except Exception as e:
+            print(f"Detailed error approving withdrawal {withdrawal_id}: {e}")
+            return False, None
 
     async def apply_approved_deposits(self):
         await self.connect()
@@ -229,43 +401,107 @@ class Database:
 
             print(f"[✓] Applied {len(deposits)} approved deposit(s) to balances.")
 
-    async def get_pending_deposits(self) -> List[Dict]:
-        await self.connect()
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT id, user_id, amount, transaction_id
-                FROM deposits
-                WHERE approved = FALSE
-            """)
-            return [dict(row) for row in rows]
+    # Database function to approve deposit by transaction ID
+    async def approve_deposit_by_transaction_id(self, transaction_id: str) -> bool:
+        try:
+            await self.connect()
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    deposit = await conn.fetchrow(
+                        "SELECT * FROM deposits WHERE transaction_id = $1 AND approved = FALSE FOR UPDATE", 
+                        transaction_id
+                    )
+                    if not deposit:
+                        return False
 
+                    await conn.execute(
+                        "UPDATE deposits SET approved = TRUE WHERE transaction_id = $1", 
+                        transaction_id
+                    )
+                    await conn.execute(
+                        "UPDATE users SET balance = balance + $1 WHERE user_id = $2", 
+                        deposit["amount"], 
+                        deposit["user_id"]
+                    )
+                    return True, deposit
+        except Exception as e:
+            return False
     async def record_withdrawal(self, user_id: int, upi_id: str, amount: float):
-        await self.connect()
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO withdrawals (user_id, upi_id, amount, status, requested_at)
-                VALUES ($1, $2, $3, 'pending', NOW())
-            """, user_id, upi_id, amount)
+        try:
+            await self.connect()
+            async with self.pool.acquire() as conn:
+                # Check user balance before withdrawal
+                user_balance = await conn.fetchval(
+                    "SELECT balance FROM users WHERE user_id = $1", 
+                    user_id
+                )
+                
+                if user_balance < amount:
+                    print(f"Insufficient balance for user {user_id}")
+                    return False
+
+                await conn.execute("""
+                    INSERT INTO withdrawals (user_id, upi_id, amount, status, requested_at)
+                    VALUES ($1, $2, $3, 'pending', NOW())
+                """, user_id, upi_id, amount)
+            return True
+        except Exception as e:
+            print(f"Error recording withdrawal: {e}")
+            return False
 
     async def get_pending_withdrawals(self) -> List[Dict]:
-        await self.connect()
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT id, user_id, amount, upi_id
-                FROM withdrawals
-                WHERE status = 'pending'
-            """)
-            return [dict(row) for row in rows]
+        try:
+            await self.connect()
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT 
+                        id, 
+                        user_id, 
+                        amount, 
+                        upi_id
+                    FROM withdrawals
+                    WHERE status = 'pending'
+                    ORDER BY requested_at DESC
+                    """
+                )
+                return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"Error fetching pending withdrawals: {e}")
+            return []
 
     # ───── BETTING ─────
 
-    async def record_bet(self, user_id: int, amount: int, choice: str):
-        query = "INSERT INTO bets (user_id, amount, choice, timestamp) VALUES ($1, $2, $3, NOW())"
-        await self.pool.execute(query, user_id, amount, choice)
+    async def record_bet(self, user_id: int, amount: float, choice: str):
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    # First check if user has sufficient balance
+                    current_balance = await conn.fetchval(
+                        "SELECT balance FROM users WHERE user_id = $1",
+                        user_id
+                    )
+                    
+                    if current_balance < amount:
+                        return False, "Insufficient balance"
 
-    async def update_balance(self, user_id: int, amount: int):
-        query = "UPDATE users SET balance = balance + $1 WHERE user_id = $2"
-        await self.pool.execute(query, amount, user_id)
+                    # Record the bet and deduct balance in a single transaction
+                    await conn.execute("""
+                        INSERT INTO bets (user_id, amount, choice, timestamp)
+                        VALUES ($1, $2, $3, NOW())
+                    """, user_id, amount, choice)
+
+                    # Deduct the bet amount from the user's balance
+                    await conn.execute("""
+                        UPDATE users
+                        SET balance = balance - $1
+                        WHERE user_id = $2
+                    """, amount, user_id)
+
+                    return True, "Bet placed successfully"
+        except Exception as e:
+            print(f"Error recording bet for user {user_id}: {e}")
+            return False, f"Error: {str(e)}"
 
     async def add_bet(self, user_id: int, amount: float, choice: str):
         await self.connect()

@@ -17,8 +17,10 @@ nest_asyncio.apply()
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
+
 # Define conversation states
 (DEPOSIT_AMOUNT, DEPOSIT_TXN_ID, WITHDRAW_AMOUNT, WITHDRAW_UPI_ID, BET_ENTER_AMOUNT, BET_CHOOSE_SIDE) = range(6)
+AWAITING_BROADCAST_MESSAGE = range(1)
 
 # 🧭 Main Menu Keyboard
 def main_menu():
@@ -26,7 +28,7 @@ def main_menu():
         ["🎯 Place a Bet"],
         ["📥 Deposit", "📤 Withdraw"],
         ["💰 Balance", "🕘 History"],
-        ["🛠 Service"],
+        ["🔗 Referral Program", "🛠 Service"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -34,20 +36,33 @@ def main_menu():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         context.user_data.clear()  # Clear previous data
-        user_id = update.effective_user.id
+        user_id = int(update.effective_user.id)  # Ensure user_id is an integer
         full_name = update.effective_user.full_name
 
-        # Debugging output
-        print(f"User {full_name} with ID {user_id} started the bot.")
+        # Check for referral code in the start command
+        args = context.args
+        referrer_id = None
+        referrer_name = None
+        if args:
+            referrer_id = int(args[0])  # Convert referrer_id to integer
+            # Fetch the referrer's full name from the database
+            referrer_name = await db.get_user_full_name(referrer_id)
 
         # Register user and check if they are new
-        is_new = await db.add_user(user_id, full_name)
+        is_new = await db.add_user(user_id, full_name, referrer_id)
         print(f"User registration status: {'New user added' if is_new else 'User already exists'}")
 
-        # Send welcome message if the user is new
-        if is_new:
+        # Award referral bonus if the user is new and has a referrer
+        if is_new and referrer_id:
+            await db.award_referral_bonus(referrer_id)
+
+        # Check if the welcome message has been shown
+        welcome_shown = await db.has_welcome_been_shown(user_id)
+
+        if not welcome_shown:
+            # Construct the welcome message
             welcome_message = (
-                "Welcome to Twice The Bet! 🎉\n\n"
+                "Welcome To Twice The Bet! 🎉\n\n"
                 "Here are some quick tips to get started:\n"
                 "1. **/start Command:** Use `/start` anytime to reset or navigate the bot. 🔄\n"
                 "2. **Registration Bonus:** Enjoy a ₹30 bonus just for signing up! 🎁\n"
@@ -58,7 +73,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "7. **Stay Updated:** Watch for new features and updates. 🚀\n\n"
                 "Thank you for choosing Twice The Bet. Have fun! 🎈"
             )
+
+            # Append referral information if applicable
+            if referrer_name:
+                welcome_message += f"\n\nYou were referred by {referrer_name}."
+
+            # Print the message to the console for debugging
+            print("Sending welcome message:", welcome_message)
+
+            # Send the welcome message
             await update.message.reply_text(welcome_message, parse_mode="Markdown")
+
+            # Update the database to mark the welcome message as shown
+            await db.mark_welcome_as_shown(user_id)
 
         # Convert the keyboard to a list to allow appending
         keyboard = main_menu().keyboard
@@ -73,6 +100,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         print(f"Error in /start command: {e}")
+import urllib.parse
+
+async def show_referral_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = update.effective_user.id
+        full_name = update.effective_user.full_name
+        referral_code = str(user_id)  # Use user ID as referral code
+
+        # Encode the full name to make it URL-safe
+        encoded_full_name = urllib.parse.quote(full_name)
+
+        # Generate a referral link using the encoded full name
+        referral_link = f"https://t.me/TwiceTheBet_bot?start={referral_code}&name={encoded_full_name}"
+
+        message = (
+            f"🔗 Your referral link is: [Click here]({referral_link})\n"
+            "Share this link with your friends! When they sign up and make their first deposit, "
+            "you'll earn a bonus."
+        )
+        await update.message.reply_text(message, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Error in show_referral_code: {e}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
@@ -102,7 +151,7 @@ async def show_admin_controls(update, context):
             ["✅ Approve Deposits", "💸 Approve Withdrawals"],
             ["👥 View Users & Balances", "📊 View Admin Profit"],
             ["🕒 View Recent Bets", "🧮 View Bet Summary"],
-            ["✅ Accept Result"],
+            ["✅ Accept Result", "📢 Broadcast Message"],
             ["🔙 Back to Menu"]
         ], resize_keyboard=True)
 
@@ -110,20 +159,58 @@ async def show_admin_controls(update, context):
     except Exception as e:
         print(f"Error in show_admin_controls: {e}")
 
+async def prompt_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = update.effective_user.id
+        if user_id != ADMIN_ID:
+            await update.message.reply_text("❌ You are not authorized.")
+            return
+
+        await update.message.reply_text("📢 Please enter the message you want to broadcast to all users:")
+        return "AWAITING_BROADCAST_MESSAGE"
+    except Exception as e:
+        print(f"Error in prompt_broadcast_message: {e}")
+
+async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        message_text = update.message.text
+        user_ids = await db.get_all_user_ids()  # Assume this function returns a list of all user IDs
+
+        for user_id in user_ids:
+            try:
+                await context.bot.send_message(chat_id=user_id, text=message_text)
+            except Exception as e:
+                print(f"Failed to send message to user {user_id}: {e}")
+
+        await update.message.reply_text("📢 Message broadcasted to all users.")
+    except Exception as e:
+        print(f"Error in broadcast_message: {e}")
+    return ConversationHandler.END
+
 async def settle_bets(winning_choice: str):
     try:
         bets = await db.get_current_bets()
         total_losing = 0
+        total_winning = 0
 
         for bet in bets:
-            if bet["choice"] != winning_choice:
+            if bet["choice"] == winning_choice:
+                # User wins, admin loses
+                total_winning += bet["amount"] * 2  # Assuming a 2x payout
+            else:
+                # User loses, admin gains
                 total_losing += bet["amount"]
 
-        # Update admin profit with the total losing amount
-        await update_admin_profit(total_losing)
+        # Calculate net change in admin profit
+        net_change = total_losing - total_winning
+
+        # Update admin profit with the net change
+        await db.update_admin_profit(net_change)
 
         # Clear bets after settlement
         await db.clear_all_bets()
+
+        print(f"Result settled. Admin profit changed by ₹{net_change}.")
     except Exception as e:
         print(f"Error settling bets: {e}")
 
@@ -165,8 +252,34 @@ async def update_admin_profit(losing_amount: float):
     except Exception as e:
         print(f"Error updating admin profit: {e}")
 
+async def approve_deposit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = update.effective_user.id
+        if user_id != ADMIN_ID:
+            await update.message.reply_text("❌ You are not authorized to approve deposits.")
+            return
+
+        if len(context.args) != 1:
+            await update.message.reply_text("❌ Please provide a valid transaction ID. Usage: /ad <transaction_id>")
+            return
+
+        transaction_id = context.args[0]
+
+        # Verify and approve the deposit
+        success, deposit_record = await db.approve_deposit_by_transaction_id(transaction_id)
+        if success:
+            deposit = dict(deposit_record)  # Convert Record to a dictionary
+            await update.message.reply_text(f"✅ Deposit with transaction ID {transaction_id} approved successfully.")
+            # Notify the user
+            await context.bot.send_message(chat_id=deposit["user_id"], text="✅ Your deposit has been approved and your balance has been updated.")
+        else:
+            await update.message.reply_text(f"❌ Failed to approve deposit with transaction ID {transaction_id}.")
+    except Exception as e:
+        await update.message.reply_text("❌ An error occurred while processing your request.")
+        print(f"Error in approve_deposit_command: {e}")
+
 # Show pending deposits (admin only)
-async def show_pending_deposits(update, context):
+async def show_pending_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         if user_id != ADMIN_ID:
@@ -179,15 +292,41 @@ async def show_pending_deposits(update, context):
             return
 
         for deposit in deposits:
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Approve", callback_data=f"approve_{deposit['id']}")
-            ]])
-            await update.message.reply_text(
-                f"User ID: {deposit['user_id']}\nAmount: ₹{deposit['amount']}\nTxn ID: {deposit['transaction_id']}",
-                reply_markup=keyboard
+            message = (
+                f"User ID: {deposit['user_id']}\n"
+                f"Amount: ₹{deposit['amount']}\n"
+                f"Txn ID: {deposit['transaction_id']}\n"
+                f"To approve, use: /approve {deposit['transaction_id']}"
             )
+            await update.message.reply_text(message)
     except Exception as e:
-        print(f"Error in show_pending_deposits: {e}")
+        await update.message.reply_text("❌ An error occurred while fetching pending deposits.")
+
+async def approve_withdrawal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = update.effective_user.id
+        if user_id != ADMIN_ID:
+            await update.message.reply_text("❌ You are not authorized to approve withdrawals.")
+            return
+
+        if len(context.args) != 1:
+            await update.message.reply_text("❌ Please provide a valid withdrawal ID. Usage: /aw <withdrawal_id>")
+            return
+
+        withdrawal_id = int(context.args[0])
+
+        # Verify and approve the withdrawal
+        success, withdrawal_record = await db.approve_withdrawal(withdrawal_id)
+        if success:
+            withdrawal = dict(withdrawal_record)  # Convert Record to a dictionary
+            await update.message.reply_text(f"✅ Withdrawal with ID {withdrawal_id} approved successfully.")
+            # Notify the user
+            await context.bot.send_message(chat_id=withdrawal["user_id"], text="✅ Your withdrawal has been approved and processed.")
+        else:
+            await update.message.reply_text(f"❌ Failed to approve withdrawal with ID {withdrawal_id}.")
+    except Exception as e:
+        await update.message.reply_text("❌ An error occurred while processing your request.")
+        print(f"Error in approve_withdrawal_command: {e}")
 
 async def show_pending_withdrawals(update, context):
     try:
@@ -202,43 +341,15 @@ async def show_pending_withdrawals(update, context):
             return
 
         for wd in withdrawals:
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Approve", callback_data=f"approve_withdraw_{wd['id']}")]])
-            await update.message.reply_text(
-                f"User ID: {wd['user_id']}\nAmount: ₹{wd['amount']}\nUPI: {wd['upi_id']}",
-                reply_markup=keyboard
+            message = (
+                f"User ID: {wd['user_id']}\n"
+                f"Amount: ₹{wd['amount']}\n"
+                f"UPI: {wd['upi_id']}\n"
+                f"To approve, use: /approve {wd['id']}"
             )
+            await update.message.reply_text(message)
     except Exception as e:
         print(f"Error in show_pending_withdrawals: {e}")
-
-# Handle the callback when admin clicks "Approve"
-async def handle_approve_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        query = update.callback_query
-        await query.answer()
-
-        data = query.data.split("_")
-
-        if len(data) < 2:
-            return await query.edit_message_text("❌ Invalid action.")
-
-        action = data[0]
-        type_or_id = data[1]
-
-        if action != "approve":
-            return
-
-        if type_or_id == "withdraw":
-            # approve_withdraw_123
-            withdrawal_id = int(data[2])
-            await db.approve_withdrawal(withdrawal_id)
-            await query.edit_message_text("✅ Withdrawal approved and balance updated.")
-        else:
-            # approve_123 (deposit)
-            deposit_id = int(type_or_id)
-            await db.approve_deposit(deposit_id)
-            await query.edit_message_text("✅ Deposit approved and user balance updated.")
-    except Exception as e:
-        print(f"Error in handle_approve_callback: {e}")
 
 async def show_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -308,30 +419,24 @@ async def bet_enter_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = update.message.text.strip()
 
-        # Check if the user selected a new option from the main menu
-        if text == "🎯 Place a Bet":
-            return BET_ENTER_AMOUNT
-        elif text == "📥 Deposit":
-            await deposit_start(update, context)
-            return ConversationHandler.END
-        elif text == "📤 Withdraw":
-            await withdraw_start(update, context)
-            return ConversationHandler.END
-        elif text in ["💰 Balance", "🕘 History", "🛠 Service"]:
-            await start(update, context)
-            return ConversationHandler.END
-
+        # Check menu options...
         if not text.isdigit():
             await update.message.reply_text("❗ Please enter a valid number.")
             return BET_ENTER_AMOUNT
 
         amount = int(text)
-        user = update.effective_user
+        user_id = update.effective_user.id
 
         # Check if the user has enough balance
-        balance = await db.get_balance(user.id)
+        balance = await db.get_balance(user_id)
         if amount > balance:
-            await update.message.reply_text("❌ Insufficient balance. Please enter a valid bet amount.")
+            await update.message.reply_text(
+                f"❌ Insufficient balance. Your current balance is ₹{balance}. Please enter a valid bet amount."
+            )
+            return BET_ENTER_AMOUNT
+
+        if amount < 10:  # Add minimum bet amount check
+            await update.message.reply_text("❌ Minimum bet amount is ₹10.")
             return BET_ENTER_AMOUNT
 
         context.user_data["bet_amount"] = amount
@@ -343,10 +448,15 @@ async def bet_enter_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔮 Choose your side: Heads or Tails?",
             reply_markup=reply_markup
         )
+        return BET_CHOOSE_SIDE
+
     except Exception as e:
         print(f"Error in bet_enter_amount: {e}")
-    return BET_CHOOSE_SIDE
-
+        await update.message.reply_text(
+            "An error occurred while processing your bet. Please try again.",
+            reply_markup=main_menu()
+        )
+        return ConversationHandler.END
 async def bet_choose_side(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = update.message.text.strip()
@@ -369,24 +479,32 @@ async def bet_choose_side(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❗ Please choose either Heads or Tails.")
             return BET_CHOOSE_SIDE
 
-        amount = context.user_data["bet_amount"]
+        amount = context.user_data.get("bet_amount")
         user = update.effective_user
 
-        # Store the bet in the database
-        await db.record_bet(user.id, amount, text)
+        # Place the bet using the modified record_bet function
+        success, message = await db.record_bet(user.id, amount, text)
 
-        # Deduct the bet amount from the user's balance
-        await db.update_balance(user.id, -amount)
+        if success:
+            await update.message.reply_text(
+                f"✅ Your bet of ₹{amount} on {text} has been placed successfully.",
+                reply_markup=main_menu()
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Failed to place bet: {message}",
+                reply_markup=main_menu()
+            )
 
-        # Send confirmation message to the user
-        await update.message.reply_text(
-            f"✅ Your bet of ₹{amount} on {text} has been placed successfully.",
-            reply_markup=main_menu()
-        )
+        return ConversationHandler.END
+
     except Exception as e:
         print(f"Error in bet_choose_side: {e}")
-    return ConversationHandler.END
-
+        await update.message.reply_text(
+            "❌ An error occurred while placing your bet. Please try again.",
+            reply_markup=main_menu()
+        )
+        return ConversationHandler.END
 # -------------------- 📥 DEPOSIT --------------------
 # -------------------- 💰 DEPOSIT (RAZORPAY) --------------------
 
@@ -487,7 +605,23 @@ async def receive_transaction_id(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 # -------------------- 📤 WITHDRAW --------------------
-# ---- Step 1: Start Withdrawal ----
+# Function to check if the user can withdraw
+async def can_withdraw(user_id: int) -> bool:
+    async with db.pool.acquire() as conn:
+        user = await conn.fetchrow("""
+            SELECT bonus_balance, referral_balance, wagered_bonus, wagered_referral
+            FROM users WHERE user_id = $1
+        """, user_id)
+
+        # Check if the user has wagered their bonus and referral amounts
+        if user['bonus_balance'] > 0 and user['wagered_bonus'] < user['bonus_balance']:
+            return False
+        if user['referral_balance'] > 0 and user['wagered_referral'] < user['referral_balance']:
+            return False
+
+        return True
+
+# Step 1: Start Withdrawal
 async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         context.user_data.clear()  # Clear previous data
@@ -496,7 +630,7 @@ async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error in withdraw_start: {e}")
     return WITHDRAW_AMOUNT
 
-# ---- Step 2: Validate amount before asking for UPI ----
+# Step 2: Validate amount before asking for UPI
 async def receive_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = update.message.text.strip()
@@ -520,23 +654,40 @@ async def receive_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_
 
         amount = int(text)
         if amount < 100:
-            await update.message.reply_text("❌ Minimum withdrawal amount is ₹100. Please enter a higher amount.")
-            return WITHDRAW_AMOUNT  # Ask again
+            await update.message.reply_text("⚠️ Minimum withdrawal amount is ₹100. Please enter a higher amount.")
+            return WITHDRAW_AMOUNT
 
-        user = update.effective_user
-        balance = await db.get_balance(user.id)
+        user_id = update.effective_user.id
+        # Fetch main balance and total wagered amount
+        main_balance = await db.get_main_balance(user_id)
+        total_wagered = await db.get_total_wagered(user_id)
 
-        if amount > balance:
-            await update.message.reply_text("❌ Insufficient balance. Your current balance is ₹{}.".format(balance))
-            return ConversationHandler.END
+        # Check if the user has wagered at least ₹200
+        if total_wagered < 200:
+            remaining_wager = 200 - total_wagered
+            await update.message.reply_text(
+                f"❌ You need to place bets worth at least ₹200 before you can withdraw. "
+                f"You need to wager ₹{remaining_wager} more.",
+                reply_markup=main_menu()  # Add the main menu keyboard
+            )
+            return ConversationHandler.END  # End the conversation here
+
+        if amount > main_balance:
+            await update.message.reply_text("❌ Insufficient balance. Your current main balance is ₹{}.".format(main_balance))
+            return WITHDRAW_AMOUNT
 
         context.user_data["withdraw_amount"] = amount
         await update.message.reply_text("💳 Enter your UPI ID for withdrawal:")
+        return WITHDRAW_UPI_ID
+
     except Exception as e:
         print(f"Error in receive_withdraw_amount: {e}")
-    return WITHDRAW_UPI_ID
-
-# ---- Step 3: Take UPI ID and record withdrawal ----
+        await update.message.reply_text(
+            "❌ An error occurred. Please try again.",
+            reply_markup=main_menu()
+        )
+        return ConversationHandler.END
+# Step 3: Take UPI ID and record withdrawal
 async def receive_withdraw_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = update.message.text.strip()
@@ -581,18 +732,18 @@ async def main():
         # Commands
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("admin", show_admin_controls))
-        app.add_handler(CommandHandler("approve_deposits", show_pending_deposits))
         app.add_handler(CommandHandler("cancel", cancel))
-
+        app.add_handler(CommandHandler("ad", approve_deposit_command))
+        app.add_handler(CommandHandler("aw", approve_withdrawal_command))
         # Regular Messages
         app.add_handler(MessageHandler(filters.Regex("^Start$"), start))
         app.add_handler(MessageHandler(filters.Text("🔐 Admin"), show_admin_controls))
         app.add_handler(MessageHandler(filters.Text("👥 Users & Balances"), show_all_users))
         app.add_handler(MessageHandler(filters.Text("💰 Balance"), show_balance))
         app.add_handler(MessageHandler(filters.Text("🕘 History"), show_history))
+        app.add_handler(MessageHandler(filters.Text("🔗 Referral Program"), show_referral_code))
         app.add_handler(MessageHandler(filters.Text("🛠 Service"), show_service))
 
-        # Admin Panel Buttons
         app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^✅ Approve Deposits$"), show_pending_deposits))
         app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^💸 Approve Withdrawals$"), show_pending_withdrawals))
         app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^👥 View Users & Balances$"), show_all_users))
@@ -600,8 +751,6 @@ async def main():
         app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^🕒 View Recent Bets$"), show_recent_bets))
         app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^🔙 Back to Menu$"), start))
 
-        # ✅ Inline Button Handler (for approving deposits/withdrawals)
-        app.add_handler(CallbackQueryHandler(handle_approve_callback, pattern="^approve_"))
 
         admin_result_handler = ConversationHandler(
             entry_points=[MessageHandler(filters.Regex("✅ Accept Result"), admin_result.accept_result)],
@@ -653,7 +802,16 @@ async def main():
         )
         app.add_handler(betting_handler)
 
-        app.add_handler(CallbackQueryHandler(handle_approve_callback))
+        broadcast_handler = ConversationHandler(
+            entry_points=[MessageHandler(filters.Regex("^📢 Broadcast Message$"), prompt_broadcast_message)],
+            states={
+                "AWAITING_BROADCAST_MESSAGE": [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_message)],
+            },
+            fallbacks=[CommandHandler("cancel", cancel)],
+            per_user=True,
+        )
+
+        app.add_handler(broadcast_handler)
 
         await app.run_polling()
     except Exception as e:
