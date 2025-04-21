@@ -52,9 +52,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "1. **/start Command:** Use `/start` anytime to reset or navigate the bot. 🔄\n"
                 "2. **Registration Bonus:** Enjoy a ₹30 bonus just for signing up! 🎁\n"
                 "3. **Referral Program:** Invite friends and earn bonuses when they join and deposit. 🤝\n"
-                "4. **Responsible Gaming:** Play responsibly. Remember, you can win or lose money. 🎲\n"
-                "5. **Need Help?** Reach out to our support team anytime. We're here for you! 📞\n"
-                "6. **Stay Updated:** Watch for new features and updates. 🚀\n\n"
+                "4. **Results:** Results will be shared every half n hour. ⏰\n"
+                "5. **Responsible Gaming:** Play responsibly. Remember, you can win or lose money. 🎲\n"
+                "6. **Need Help?** Reach out to our support team anytime. We're here for you! 📞\n"
+                "7. **Stay Updated:** Watch for new features and updates. 🚀\n\n"
                 "Thank you for choosing Twice The Bet. Have fun! 🎈"
             )
             await update.message.reply_text(welcome_message, parse_mode="Markdown")
