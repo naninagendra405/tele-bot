@@ -818,14 +818,16 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # Check if an event loop is already running
+        import sys
+        if sys.platform.startswith("win"):
+            # Windows sometimes has trouble with nested loops
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            print("Event loop is already running. Using the existing loop.")
-            # If the event loop is already running, run `main` using create_task
-            loop.create_task(main())
+            print("Event loop already running. Creating task.")
+            loop.create_task(main())  # Fire-and-forget
         else:
-            # If no event loop is running, create a new one
-            asyncio.run(main())
+            loop.run_until_complete(main())  # Proper for environments without active loop
     except Exception as e:
         print(f"Error in bot initialization: {e}")
