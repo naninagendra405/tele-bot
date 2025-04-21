@@ -7,7 +7,6 @@ from handlers.balance import show_balance
 from handlers.history import show_history
 from handlers.service import show_service
 from config import ADMIN_ID
-import nest_asyncio
 import asyncio
 
 # Enable nested event loops
