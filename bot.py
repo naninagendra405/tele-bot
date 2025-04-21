@@ -7,15 +7,14 @@ from handlers.balance import show_balance
 from handlers.history import show_history
 from handlers.service import show_service
 from config import ADMIN_ID
-from dotenv import load_dotenv
 import nest_asyncio
 
 # Enable nested event loops
 nest_asyncio.apply()
 
 # Load environment variables
-load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 
 # Define conversation states

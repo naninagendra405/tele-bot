@@ -12,7 +12,7 @@ async def get_db_connection():
 
 class Database:
     def __init__(self):
-        self.pool: Optional[asyncpg.pool.Pool] = None
+        self.pool = None
 
     async def connect(self):
         try:
