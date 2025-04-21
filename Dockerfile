@@ -1,15 +1,20 @@
-FROM python:3.9
+FROM python:3.12-alpine
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install system dependencies and build dependencies
+RUN apk update && apk add --no-cache \
     gcc \
-    postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+    musl-dev \
+    postgresql-dev \
+    python3-dev \
+    libffi-dev \
+    build-base
 
-# Copy requirements and install
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
+
+# Install Python packages
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application
