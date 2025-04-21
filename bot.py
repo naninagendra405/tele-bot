@@ -11,7 +11,6 @@ import nest_asyncio
 import asyncio
 
 # Enable nested event loops
-nest_asyncio.apply()
 
 # Load environment variables
 TOKEN = os.getenv("BOT_TOKEN")
