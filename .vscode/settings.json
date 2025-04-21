@@ -9,5 +9,6 @@
             "database": "postgres",
             "username": "postgres"
         }
-    ]
+    ],
+    "python.analysis.autoImportCompletions": true
 }
