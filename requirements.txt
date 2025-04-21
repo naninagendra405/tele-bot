@@ -27,5 +27,3 @@ typing_extensions==4.13.0
 tzdata==2025.2
 tzlocal==5.3.1
 yarl==1.18.3
-nest_asyncio
-
