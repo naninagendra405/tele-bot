@@ -8,6 +8,7 @@ from handlers.history import show_history
 from handlers.service import show_service
 from config import ADMIN_ID
 import nest_asyncio
+import asyncio
 
 # Enable nested event loops
 nest_asyncio.apply()
@@ -818,4 +819,4 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())
