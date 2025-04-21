@@ -238,7 +238,7 @@ class Database:
         except Exception as e:
             print(f"Error awarding referral bonus to user {referrer_id}: {e}")
 
-    # ───── DEPOSITS & WITHDRAWALS ─────
+    # ───── DEPOSITS & WITHDRAWALS ────
     async def record_deposit(self, user_id: int, txn_id: str, amount: float) -> bool:
         try:
             async with self.pool.acquire() as conn:

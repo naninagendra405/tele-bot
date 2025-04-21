@@ -810,11 +810,22 @@ async def main():
         app.add_handler(broadcast_handler)
 
         await app.run_polling()
+
     except Exception as e:
         print(f"Error in bot initialization: {e}")
+    finally:
+        await app.shutdown()  # Gracefully shut down the app
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())  # Use asyncio.run() to manage the loop
+        # Check if an event loop is already running
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            print("Event loop is already running. Using the existing loop.")
+            # If the event loop is already running, run `main` using create_task
+            loop.create_task(main())
+        else:
+            # If no event loop is running, create a new one
+            asyncio.run(main())
     except Exception as e:
         print(f"Error in bot initialization: {e}")
