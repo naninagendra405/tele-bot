@@ -9,7 +9,6 @@ from handlers.service import show_service
 from config import ADMIN_ID
 import asyncio
 
-# Enable nested event loops
 
 # Load environment variables
 TOKEN = os.getenv("BOT_TOKEN")
